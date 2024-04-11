@@ -1,3 +1,8 @@
+/// todo
+// fix ht_destroy
+// utilize hashes
+// implement ring_init in ring_buffer.h
+
 #include "common.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +47,16 @@ typedef struct
 
 uint32_t s_init_table_size = 0;
 ht *table;
+
+void print_ring()
+{
+    printf("---------print_ring ---------------------\n");
+    for (int i = ring->c_head; i < ring->c_tail + 1; i++)
+    {
+        printf("  buffer(%u) = %u->%u\n", i, ring->buffer[i].k, ring->buffer[i].v);
+    }
+    printf("-----------------------------------------\n");
+}
 
 ht *ht_create(void)
 {
@@ -104,7 +119,7 @@ void put(key_type k, value_type v)
 // with an increase in the number of threads.
 value_type get(key_type k)
 {
-     int length = atomic_load(&table->length);
+    int length = atomic_load(&table->length);
     for (int i = 0; i < length; ++i)
     {
         if (k == *(table->entries[i].k))
@@ -115,7 +130,6 @@ value_type get(key_type k)
     return 0;
 }
 
-
 /*
  * Function that's run by each thread
  * @param arg context for this thread
@@ -124,30 +138,30 @@ void *thread_function(void *arg)
 {
     struct thread_context *ctx = arg;
     printf(" ctx->num_reqs = %d\n", ctx->num_reqs);
+
     /* Keep submitting the requests and processing the completions */
-    for (int i = 0; i < ctx->num_reqs; i++)
+    // for (int i = 0; i < ctx->num_reqs; i++)
 
+    // {
+    struct buffer_descriptor bd; //= ctx->reqs[i];
+
+    ring_get(ring, &bd);
+    struct buffer_descriptor *result = (struct buffer_descriptor *)(shared_mem_start + bd.res_off);
+
+    memcpy(result, &bd, sizeof(struct buffer_descriptor));
+
+    if (result->req_type == PUT)
     {
-        struct buffer_descriptor bd = ctx->reqs[i];
-
-        ring_get(ring, &bd);
-
-        struct buffer_descriptor *result = (struct buffer_descriptor *)(shared_mem_start + bd.res_off);
-
-        memcpy(result, &bd, sizeof(struct buffer_descriptor));
-
-        if (result->req_type == PUT)
-        {
-            put(result->k, result->v);
-        }
-        else
-        {
-            result->v = get(result->k);
-        }
-        result->ready = 1;
-        // printf(" ----------------------ring_get(k:%u,v:%u)\n", bd.k, bd.v);
-        // printf(" result(k:%u,v:%u)\n", result->k, result->v);
+        put(result->k, result->v);
     }
+    else
+    {
+        result->v = get(result->k);
+    }
+    result->ready = 1;
+    printf("--ring_get(k:%u,v:%u)\n", bd.k, bd.v);
+    printf("-- result(k:%u,v:%u)\n\n\n", result->k, result->v);
+    // }
 }
 
 // implements the server main() function with the following command line arguments:
@@ -195,30 +209,29 @@ int main(int argc, char *argv[])
     /* mmap dups the fd, no longer needed */
     close(fd);
     ring = (struct ring *)shared_mem_start;
-    printf("________________________ring->c_headl = %u, ring->c_tail = %u \n",ring->c_head, ring->c_tail);
-    int reqs_per_th = ring->c_tail+1 / num_threads;
+   while(true) {
+
+    int reqs_per_th = (ring->c_tail - ring->c_head + 1) / num_threads;
     struct buffer_descriptor *r = ring->buffer;
     // start threads
-     printf(" num_threads = %d",num_threads);
     for (int i = 0; i < num_threads; i++)
     {
         struct thread_context context;
         context.tid = i;
         context.num_reqs = reqs_per_th;
         context.reqs = r;
-         printf("befoe threads");
         if (pthread_create(&threads[i], NULL, &thread_function, &context))
             perror("pthread_create");
-        printf("after threads");
         r += reqs_per_th;
     }
 
-    printf("completed threads");
     /// wait for threads
     for (int i = 0; i < num_threads; i++)
         if (pthread_join(threads[i], NULL))
             perror("pthread_join");
-    printf("completed threads");
+    while (ring->c_tail == ring->c_head)
+        sleep(0);
+    } 
     // need to figure out why below call is failing with seg fault
     // ht_destroy(table);
 }
