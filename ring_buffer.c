@@ -10,7 +10,8 @@
  */
 int init_ring(struct ring *r)
 {
-    struct buffer_descriptor temp;
+    //todo ??
+    // struct buffer_descriptor temp;
     // ring_submit(r, &temp);
     return 0;
 }
@@ -24,14 +25,16 @@ int init_ring(struct ring *r)
  */
 void ring_submit(struct ring *r, struct buffer_descriptor *bd)
 {
-    uint32_t tail = atomic_load(&r->c_tail);
-    uint32_t next_tail = tail + 1; // next is where tail will point to after this input.
-    while (!atomic_compare_exchange_strong(&r->c_tail, &tail, next_tail))
-    {
-        tail = atomic_load(&r->c_tail);
-        next_tail = tail + 1;
-    }
-    r->buffer[tail] = *bd;
+    //buffer is full
+    if( ((r->c_head + 1) % RING_SIZE) == r->c_tail) return; 
+    uint32_t next_tail, tail;   
+    do { 
+        tail = r->c_tail;
+        next_tail = (tail + 1) % RING_SIZE; // next is where tail will point to after this input.
+    } while (!atomic_compare_exchange_strong(&r->c_tail, &tail, next_tail));
+
+    r->buffer[r->c_tail] = *bd;
+    //printf("ring_submit r->buffer[r->c_tail:%u] = k:%u\n", tail,r->buffer[r->c_tail].k );
 }
 
 /*
@@ -44,12 +47,13 @@ void ring_submit(struct ring *r, struct buffer_descriptor *bd)
  */
 void ring_get(struct ring *r, struct buffer_descriptor *bd)
 {
-    uint32_t head = atomic_load(&r->c_head);
-    uint32_t next_head = head + 1; // next is where tail will point to after this input.
-    while (!atomic_compare_exchange_strong(&r->c_head, &head, next_head))
-    {
-        head = atomic_load(&r->c_head);
-        next_head = head + 1;
-    }
+    //buffer is empty
+    //if(r->c_head == 0 && r->c_head == r->c_tail) return; 
+    uint32_t head,next_head;
+   do {
+     head = r->c_head;
+     next_head = (head + 1) % RING_SIZE; // next is where tail will point to after this input.
+   } while (!atomic_compare_exchange_strong(&r->c_head, &head, next_head));
     *bd = r->buffer[head];
+     //printf("ring_get r->buffer[r->c_head:%u] = k:%u\n", head,r->buffer[r->c_head].k );
 }

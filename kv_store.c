@@ -24,6 +24,8 @@ pthread_t threads[MAX_THREADS];
 char *shared_mem_start;
 int verbose = 0;
 int num_threads = 1;
+uint32_t s_init_table_size = 0;
+
 struct thread_context
 {
     int tid;                        /* thread ID */
@@ -45,18 +47,7 @@ typedef struct
     uint32_t length;   // number of items in hash table
 } ht;
 
-uint32_t s_init_table_size = 0;
 ht *table;
-
-void print_ring()
-{
-    printf("---------print_ring ---------------------\n");
-    for (int i = ring->c_head; i < ring->c_tail + 1; i++)
-    {
-        printf("  buffer(%u) = %u->%u\n", i, ring->buffer[i].k, ring->buffer[i].v);
-    }
-    printf("-----------------------------------------\n");
-}
 
 ht *ht_create(void)
 {
@@ -79,36 +70,38 @@ ht *ht_create(void)
     return tb;
 }
 
-void ht_destroy(ht *table)
-{
-    // First free allocated keys.
-    for (size_t i = 0; i < s_init_table_size; i++)
-    {
-        free((void *)table->entries[i].k);
-    }
-    // Then free entries array and table itself.
-    free(table->entries);
-    free(table);
-}
+// void ht_destroy(ht *table)
+// {
+//     // First free allocated keys.
+//     for (size_t i = 0; i < s_init_table_size; i++)
+//     {
+//         free((void *)table->entries[i].k);
+//     }
+//     // Then free entries array and table itself.
+//     free(table->entries);
+//     free(table);
+// }
 
 // This function is used to insert a key-value pair into the store. If the key already exists,
 // it updates the associated value.
 void put(key_type k, value_type v)
 {
-    int length = atomic_load(&table->length);
-    int i;
-    for (i = 0; i < length; ++i)
+    if(k == 0) return; //todo: may be find better way to filter out empty requsts
+    index_t index = hash_function(k, s_init_table_size);
+
+    if(table->entries[index].k != NULL)
     {
-        if (k == *(table->entries[i].k))
-        {
-            // Key found, update value
-            table->entries[i].v = v;
-            return;
-        }
+        if (*table->entries[index].k != k)
+            perror("collision");
+        // Key found, update value
+        table->entries[index].v = v;
+        return;
     }
+    if(table->length >= s_init_table_size)
+            perror("kv_store_capacity_reached");
     // Key not found, insert new key-value pair
-    table->entries[length].k = &k;
-    table->entries[length].v = v;
+    table->entries[index].k = &k;
+    table->entries[index].v = v;
     atomic_fetch_add(&table->length, 1);
 }
 
@@ -119,13 +112,11 @@ void put(key_type k, value_type v)
 // with an increase in the number of threads.
 value_type get(key_type k)
 {
-    int length = atomic_load(&table->length);
-    for (int i = 0; i < length; ++i)
+    if(k == 0) return 0; //todo: may be find better way to filter out empty requsts
+    index_t index = hash_function(k, s_init_table_size);
+    if (table->entries[index].k != NULL)
     {
-        if (k == *(table->entries[i].k))
-        {
-            return table->entries[i].v;
-        }
+        return table->entries[index].v;
     }
     return 0;
 }
@@ -137,13 +128,7 @@ value_type get(key_type k)
 void *thread_function(void *arg)
 {
     struct thread_context *ctx = arg;
-    printf(" ctx->num_reqs = %d\n", ctx->num_reqs);
-
-    /* Keep submitting the requests and processing the completions */
-    // for (int i = 0; i < ctx->num_reqs; i++)
-
-    // {
-    struct buffer_descriptor bd; //= ctx->reqs[i];
+    struct buffer_descriptor bd;
 
     ring_get(ring, &bd);
     struct buffer_descriptor *result = (struct buffer_descriptor *)(shared_mem_start + bd.res_off);
@@ -159,9 +144,6 @@ void *thread_function(void *arg)
         result->v = get(result->k);
     }
     result->ready = 1;
-    printf("--ring_get(k:%u,v:%u)\n", bd.k, bd.v);
-    printf("-- result(k:%u,v:%u)\n\n\n", result->k, result->v);
-    // }
 }
 
 // implements the server main() function with the following command line arguments:
@@ -209,29 +191,30 @@ int main(int argc, char *argv[])
     /* mmap dups the fd, no longer needed */
     close(fd);
     ring = (struct ring *)shared_mem_start;
-   while(true) {
 
-    int reqs_per_th = (ring->c_tail - ring->c_head + 1) / num_threads;
-    struct buffer_descriptor *r = ring->buffer;
-    // start threads
-    for (int i = 0; i < num_threads; i++)
-    {
-        struct thread_context context;
-        context.tid = i;
-        context.num_reqs = reqs_per_th;
-        context.reqs = r;
-        if (pthread_create(&threads[i], NULL, &thread_function, &context))
-            perror("pthread_create");
-        r += reqs_per_th;
+    while (true) {
+    
+        //    sleep(0);
+
+        int reqs_per_th = (ring->c_tail - ring->c_head + 1) / num_threads;
+        struct buffer_descriptor *r = ring->buffer;
+        // start threads
+        for (int i = 0; i < num_threads; i++)
+        {
+            struct thread_context context;
+            context.tid = i;
+            context.num_reqs = reqs_per_th;
+            //context.reqs = r;
+            if (pthread_create(&threads[i], NULL, &thread_function, &context))
+                perror("pthread_create");
+            r += reqs_per_th;
+        }
+
+        /// wait for threads
+        for (int i = 0; i < num_threads; i++)
+            if (pthread_join(threads[i], NULL))
+                perror("pthread_join");
     }
-
-    /// wait for threads
-    for (int i = 0; i < num_threads; i++)
-        if (pthread_join(threads[i], NULL))
-            perror("pthread_join");
-    while (ring->c_tail == ring->c_head)
-        sleep(0);
-    } 
     // need to figure out why below call is failing with seg fault
     // ht_destroy(table);
 }
