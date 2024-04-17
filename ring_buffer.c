@@ -3,12 +3,9 @@
 #include <stdlib.h>
 #include <stdatomic.h>
 #include <unistd.h>
-// #include <fcntl.h>  // for open
-// #include <unistd.h> // for close
-// #include <sys/stat.h>
-// #include <sys/mman.h>
 pthread_mutex_t mutex_head;
 pthread_mutex_t mutex_tail;
+
 /*
  * Initialize the ring
  * @param r A pointer to the ring
@@ -17,7 +14,8 @@ pthread_mutex_t mutex_tail;
  */
 int init_ring(struct ring *r)
 {
-    for(int i = 0; i < RING_SIZE; i++) {
+    for (int i = 0; i < RING_SIZE; i++)
+    {
         r->buffer[i].k = 0;
         r->buffer[i].v = 0;
     }
@@ -34,34 +32,30 @@ int init_ring(struct ring *r)
 void ring_submit(struct ring *r, struct buffer_descriptor *bd)
 {
 
-    // buffer is full
-    if (((r->c_head + 1) % RING_SIZE) == r->c_tail) {
-        return;
-    }
-   
     // uint32_t next_tail, tail;
     // do
     // {
-    //     //printf("ring_submit is locked!\n");
-    //     tail = atomic_load(&r->c_tail);
-    //     next_tail = (tail + 1) % RING_SIZE; // next is where tail will point to after this input.
-    //     r->buffer[r->c_tail] = *bd;
-    // } while (!atomic_compare_exchange_strong(&r->c_tail, &tail, next_tail));
-    //printf("     r->buffer[r->c_tail:%u]\n", r->c_tail);
-   
-    pthread_mutex_lock(&mutex_tail);
-    int next_tail = (atomic_load(&r->c_tail) + 1) % RING_SIZE;
-    if (next_tail != atomic_load(&r->c_head)) {
-        r->buffer[atomic_load(&r->c_tail)] = *bd;
-        atomic_store(&r->c_tail, next_tail);
-    } else {
-       printf("RING is full, cannot submit.\n");
-    }
-    pthread_mutex_unlock(&mutex_tail);
+    //     next_tail = (atomic_load(&r->c_tail) + 1) % RING_SIZE; // set next tail
+    //     tail = atomic_load(&r->c_tail);                        // save current tail
+    //     while (next_tail == atomic_load(&r->c_head))           // chec if buffer full
+    //     {
+    //         printf("Buffer is full, cannot submit.\n");
+    //         sched_yield();
+    //     }
+    // } while (!atomic_compare_exchange_strong(&r->c_tail, &tail, next_tail)); // if current tail is still current - set to next tail
+    // r->buffer[atomic_load(&r->c_tail)] = *bd; // return value from current tail
 
-
-    //
-    //printf("ring_submit r->buffer[r->c_tail:%u] = k:%u\n", tail,r->buffer[r->c_tail].k );
+    //this lock still not heling with multithreaded client
+        pthread_mutex_lock(&mutex_tail);
+        int next_tail = (atomic_load(&r->c_tail) + 1) % RING_SIZE;
+        if (next_tail != atomic_load(&r->c_head)) {
+            r->c_tail=  atomic_load(&next_tail);
+            r->buffer[atomic_load(&r->c_tail)] = *bd;     
+        } else {
+           printf("RING is full, cannot submit.\n");
+           sched_yield();
+        }
+       pthread_mutex_unlock(&mutex_tail);
 }
 
 /*
@@ -74,33 +68,32 @@ void ring_submit(struct ring *r, struct buffer_descriptor *bd)
  */
 void ring_get(struct ring *r, struct buffer_descriptor *bd)
 {
-    // buffer is empty
-    //if(r->c_head == 0 && r->c_head == r->c_tail) return;
-   
-    // uint32_t head, next_head;
-    // do
-    // {
-    //     // printf("ring_get is locked!\n");
-    //     // sleep(0.0001);
-    //     head = atomic_load(&r->c_head);
-    //     //  if (head == atomic_load(&r->c_tail)) {
-    //     //     printf("Buffer is empty, cannot get.\n");
-    //     //     return; 
-    //     // }
-    //      *bd = r->buffer[head];
-    //     next_head = (head + 1) % RING_SIZE; // next is where tail will point to after this input.
-    // } while (!atomic_compare_exchange_strong(&r->c_head, &head, next_head));
-    
-   // printf("     r->buffer[r->c_head:%u]\n", r->c_head);
-    
+    uint32_t head, next_head;
+    do
+    {
+        if (atomic_load(&r->c_head) == atomic_load(&r->c_tail)) // check if buffer empty
+        {
+            //printf("Buffer is empty, cannot get. head=tail=%u\n", atomic_load(&r->c_head));
+            sched_yield();
+            return;
+        }
+        head = atomic_load(&r->c_head);     // save current head
+        next_head = (head + 1) % RING_SIZE; // set next head
+        // printf("ring_get. head=%u\n", atomic_load(&next_head));
+    } while (!atomic_compare_exchange_strong(&r->c_head, &head, next_head)); // if current head is still current - set to next head
+    *bd = r->buffer[atomic_load(&r->c_head)]; // return valud from new head
 
-    pthread_mutex_lock(&mutex_head);
-      if (atomic_load(&r->c_head) == atomic_load(&r->c_tail)) {
-        //printf("RING is empty, cannot get.\n");
-    } else {
-        *bd = r->buffer[atomic_load(&r->c_head)];
-        atomic_store(&r->c_head, (atomic_load(&r->c_head) + 1) % RING_SIZE);
-    }
-    pthread_mutex_unlock(&mutex_head);
-    //printf("ring_get r->buffer[r->c_head:%u] = k:%u\n", head,r->buffer[r->c_head].k );
+    //lock to handle multithread servers
+    //  pthread_mutex_lock(&mutex_head);
+    //  if (atomic_load(&r->c_head) == atomic_load(&r->c_tail))
+    //  {
+    //      //printf("RING is empty, cannot get. (when tail==head==%u)\n", atomic_load(&r->c_tail));
+    //      sched_yield();    
+    //  }
+    //  else
+    //  {
+    //     r->c_head =  (atomic_load(&r->c_head) + 1) % RING_SIZE;
+    //      *bd = r->buffer[atomic_load(&r->c_head)];
+    //  }
+    //   pthread_mutex_unlock(&mutex_head);
 }
