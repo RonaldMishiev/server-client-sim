@@ -10,6 +10,26 @@
 #include <stdatomic.h>
 #include <string.h>
 
+////////////////////////////////////////////
+atomic_bool shutdown_flag = ATOMIC_VAR_INIT(false);
+
+#include <signal.h>
+
+void handle_signal(int sig) {
+    atomic_store(&shutdown_flag, true);
+}
+
+void setup_signal_handlers() {
+    struct sigaction sa;
+    sa.sa_handler = handle_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+}
+
+//////////////////////////////////////////////
+
 #define MAX_THREADS 10
 int verbose = 0;
 #define PRINTV(...)         \
@@ -117,26 +137,31 @@ void get(key_type k, value_type *v ) {
  * @param arg context for this thread
  */
 void *thread_function(void *arg) {
-    while (1) {
+    while (!atomic_load(&shutdown_flag)) {
         struct buffer_descriptor *bd = malloc(sizeof(struct buffer_descriptor));
         struct buffer_descriptor *result;
         do {
-            //PRINTV("looping trying to get valid ring_get");
             ring_get(ring, bd);
-        } while (bd->k == 0 );
+            if (atomic_load(&shutdown_flag)) { // Check flag again after blocking call
+                free(bd);
+                return NULL;
+            }
+        } while (bd->k == 0);
+        
         result = (struct buffer_descriptor *)(shmem_area + bd->res_off);
         memcpy(result, bd, sizeof(struct buffer_descriptor));
         if (result->req_type == PUT) {
             put(result->k, result->v);
-        }
-        else {
+        } else {
             get(result->k, &result->v);
         }
 
         result->ready = 1;
         free(bd);
     }
+    return NULL;
 }
+
 
 static int parse_args(int argc, char **argv) {
     int op;
@@ -170,6 +195,8 @@ int main(int argc, char *argv[]) {
     if (parse_args(argc, argv) != 0) {
 		exit(1);
     }
+
+    setup_signal_handlers(); //shutdown flag
 
     // Allocate space for hash table struct.
     table = malloc(sizeof(hash_table));
@@ -227,5 +254,5 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    //hash_table_destroy(table);
+    hash_table_destroy(table); //uncommented
 }
