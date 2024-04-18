@@ -3,9 +3,31 @@
 #include <stdlib.h>
 #include <stdatomic.h>
 #include <unistd.h>
-pthread_mutex_t mutex_head;
-pthread_mutex_t mutex_tail;
 
+#include <semaphore.h>
+#include <fcntl.h>
+
+#define SNAME_EMPTY "/mysem_empty1"
+#define SNAME_FULL "/mysem_full"
+#define SNAME_SUBMIT "/mysem_submit"
+#define SNAME_GET "/mysem_get"
+
+sem_t *empty, *full, *mutex_submit, *mutex_get;
+void sem_reset(sem_t *sem, int INITIAL_VAL)
+{
+    int value;
+    sem_getvalue(sem, &value);
+    while (value > INITIAL_VAL)
+    {
+        sem_wait(sem);
+        sem_getvalue(sem, &value);
+    }
+    while (value < INITIAL_VAL)
+    {
+        sem_post(sem);
+        sem_getvalue(sem, &value);
+    }
+}
 /*
  * Initialize the ring
  * @param r A pointer to the ring
@@ -19,81 +41,104 @@ int init_ring(struct ring *r)
         r->buffer[i].k = 0;
         r->buffer[i].v = 0;
     }
+
+    empty = sem_open(SNAME_EMPTY, O_CREAT, 0644, RING_SIZE);
+    sem_reset(empty, RING_SIZE);
+    if (empty == SEM_FAILED)
+    {
+        perror("Failed to open semphore for empty");
+        exit(-1);
+    }
+    full = sem_open(SNAME_FULL, O_CREAT, 0644, 0);
+    sem_reset(full, 0);
+    if (full == SEM_FAILED)
+    {
+        perror("Failed to open semphore for full");
+        exit(-1);
+    }
+    mutex_submit = sem_open(SNAME_SUBMIT, O_CREAT, 0644, 1);
+    sem_reset(mutex_submit, 1);
+    if (mutex_submit == SEM_FAILED)
+    {
+        perror("Failed to open semphore for mutex_submit");
+        exit(-1);
+    }
+    mutex_get = sem_open(SNAME_GET, O_CREAT, 0644, 1);
+    sem_reset(mutex_get, 1);
+    if (mutex_get == SEM_FAILED)
+    {
+        perror("Failed to open semphore for mutex_get");
+        exit(-1);
+    }
     return 0;
 }
 
-/*
- * Submit a new item - should be thread-safe
- * This call will block the calling thread if there's not enough space
- * @param r The shared ring
- * @param bd A pointer to a valid buffer_descriptor - This pointer is only
- * guaranteed to be valid during the invocation of the function
- */
-void ring_submit(struct ring *r, struct buffer_descriptor *bd)
+int re_init()
 {
-
-    // uint32_t next_tail, tail;
-    // do
-    // {
-    //     next_tail = (atomic_load(&r->c_tail) + 1) % RING_SIZE; // set next tail
-    //     tail = atomic_load(&r->c_tail);                        // save current tail
-    //     while (next_tail == atomic_load(&r->c_head))           // chec if buffer full
-    //     {
-    //         printf("Buffer is full, cannot submit.\n");
-    //         sched_yield();
-    //     }
-    // } while (!atomic_compare_exchange_strong(&r->c_tail, &tail, next_tail)); // if current tail is still current - set to next tail
-    // r->buffer[atomic_load(&r->c_tail)] = *bd; // return value from current tail
-
-    //this lock still not heling with multithreaded client
-        pthread_mutex_lock(&mutex_tail);
-        int next_tail = (atomic_load(&r->c_tail) + 1) % RING_SIZE;
-        if (next_tail != atomic_load(&r->c_head)) {
-            r->c_tail=  atomic_load(&next_tail);
-            r->buffer[atomic_load(&r->c_tail)] = *bd;     
-        } else {
-           printf("RING is full, cannot submit.\n");
-           sched_yield();
-        }
-       pthread_mutex_unlock(&mutex_tail);
+    empty = sem_open(SNAME_EMPTY, RING_SIZE);
+    if (empty == SEM_FAILED)
+    {
+        perror("Failed to open semphore for empty");
+        exit(-1);
+    }
+    full = sem_open(SNAME_FULL, 0);
+    if (full == SEM_FAILED)
+    {
+        perror("Failed to open semphore for full");
+        exit(-1);
+    }
+    mutex_submit = sem_open(SNAME_SUBMIT, 1); // get in server only cares about its mutex lock
+    if (mutex_submit == SEM_FAILED)
+    {
+        perror("Failed to open semphore for mutex_submit");
+        exit(-1);
+    }
+    mutex_get = sem_open(SNAME_GET, 1);
+    if (mutex_get == SEM_FAILED)
+    {
+        perror("Failed to open semphore for mutex_get");
+        exit(-1);
+        return 0;
+    }
 }
 
-/*
- * Get an item from the ring - should be thread-safe
- * This call will block the calling thread if the ring is empty
- * @param r A pointer to the shared ring
- * @param bd pointer to a valid buffer_descriptor to copy the data to
- * Note: This function is not used in the clinet program, so you can change
- * the signature.
- */
+void ring_submit(struct ring *r, struct buffer_descriptor *bd)
+{
+    sem_wait(empty);
+    // printf("submit___________sem_wait(&mutex_submit);\n");
+    sem_wait(mutex_submit);
+    int next_tail = (r->c_tail + 1) % RING_SIZE;
+    if (next_tail == r->c_head)
+    {
+        // printf("RING is full, cannot submit. - head:%u == tail:%u\n", r->c_head, r->c_tail);
+        // printf("submit___________sem_post(&full);\n");
+        sem_post(full);
+    }
+    r->c_tail = next_tail;
+    r->buffer[r->c_tail] = *bd;
+    sem_post(mutex_submit);
+    // printf("submit___________sem_post(&full);\n");
+    sem_post(full);
+}
+
 void ring_get(struct ring *r, struct buffer_descriptor *bd)
 {
-    uint32_t head, next_head;
-    do
-    {
-        if (atomic_load(&r->c_head) == atomic_load(&r->c_tail)) // check if buffer empty
-        {
-            //printf("Buffer is empty, cannot get. head=tail=%u\n", atomic_load(&r->c_head));
-            sched_yield();
-            return;
-        }
-        head = atomic_load(&r->c_head);     // save current head
-        next_head = (head + 1) % RING_SIZE; // set next head
-        // printf("ring_get. head=%u\n", atomic_load(&next_head));
-    } while (!atomic_compare_exchange_strong(&r->c_head, &head, next_head)); // if current head is still current - set to next head
-    *bd = r->buffer[atomic_load(&r->c_head)]; // return valud from new head
+    re_init();
 
-    //lock to handle multithread servers
-    //  pthread_mutex_lock(&mutex_head);
-    //  if (atomic_load(&r->c_head) == atomic_load(&r->c_tail))
-    //  {
-    //      //printf("RING is empty, cannot get. (when tail==head==%u)\n", atomic_load(&r->c_tail));
-    //      sched_yield();    
-    //  }
-    //  else
-    //  {
-    //     r->c_head =  (atomic_load(&r->c_head) + 1) % RING_SIZE;
-    //      *bd = r->buffer[atomic_load(&r->c_head)];
-    //  }
-    //   pthread_mutex_unlock(&mutex_head);
+    // printf("get___________sem_wait(&full); - head:%u <= tail:%u\n", r->c_head, r->c_tail);
+    sem_wait(full);
+    // printf("get__________sem_wait(&mutex_get);\n");
+    sem_wait(mutex_get);
+    if (r->c_head == r->c_tail)
+    {
+        // printf("RING is empty, cannot get. (when tail==head==%u)\n", r->c_tail);
+        // printf("get__________sem_post(&empty);\n");
+        sem_post(empty);
+    }
+    r->c_head = (r->c_head + 1) % RING_SIZE;
+    *bd = r->buffer[r->c_head];
+    // printf("get__________sem_post(&mutex_get);;\n");
+    sem_post(mutex_get);
+    // printf("get__________sem_post(&empty);;\n");
+    sem_post(empty);
 }
