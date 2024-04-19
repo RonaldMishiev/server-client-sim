@@ -55,7 +55,7 @@ struct thread_context
 
 typedef struct
 {
-    const key_type *k; // key is NULL if this slot is empty
+    key_type k; // key is NULL if this slot is empty
     value_type v;
 } kv_entry;
 
@@ -73,10 +73,10 @@ hash_table *table;
 void hash_table_destroy(hash_table *table)
 {
     // First free allocated keys.
-    for (size_t i = 0; i < initial_table_size; i++)
-    {
-        free((void *)table->entries[i].k);
-    }
+    // for (size_t i = 0; i < initial_table_size; i++)
+    // {
+    //     free((void *)table->entries[i].k);
+    // }
     // Then free entries array and table itself.
     free(table->entries);
     free(table);
@@ -86,13 +86,13 @@ void hash_table_destroy(hash_table *table)
 // it updates the associated value.
 void put(key_type k, value_type v)
 {
-    int index = hash_function(k, initial_table_size);
+    atomic_int index = hash_function(k, initial_table_size);
 
     pthread_mutex_lock(&table->mutex[index]);
-    if (table->entries[index].k != NULL)
+    if (table->entries[index].k != 0)
     {
         int tmp = -1;
-        if (*table->entries[index].k != k)
+        if (table->entries[index].k != k)
         {
             int start = index;
             do
@@ -100,26 +100,30 @@ void put(key_type k, value_type v)
                 pthread_mutex_unlock(&table->mutex[index]);
                 index = (index + 1) % initial_table_size;
                 pthread_mutex_lock(&table->mutex[index]);
-                if (tmp == -1 && table->entries[index].k == NULL)
+                if (tmp == -1 && table->entries[index].k == 0)
                 {
                     tmp = index;
                 }
-            } while (table->entries[index].k != NULL && *table->entries[index].k != k && index != start);
+            } while (table->entries[index].k != 0 && table->entries[index].k != k && index != start);
         }
 
-        if (table->entries[index].k == NULL)
+        if (table->entries[index].k == 0)
         {
             pthread_mutex_unlock(&table->mutex[index]);
             index = tmp;
             pthread_mutex_lock(&table->mutex[index]);
         }
-
         table->entries[index].v = v;
     }
     else
-    {
-        table->entries[index].k = &k;
+    {  
+        /*if (table->size >= initial_table_size) {
+            printf("kv_store_capacity_reached= %d >= %d\n", table->size, initial_table_size);
+        }*/
+         
+        table->entries[index].k = k;
         table->entries[index].v = v;
+        // atomic_fetch_add(&table->size, 1);
     }
     pthread_mutex_unlock(&table->mutex[index]);
 }
@@ -128,24 +132,25 @@ void put(key_type k, value_type v)
 // If the key is not found, it returns 0.
 void get(key_type k, value_type *v)
 {
-    int index = hash_function(k, initial_table_size);
+     
+    atomic_int index = hash_function(k, initial_table_size);
 
     pthread_mutex_lock(&table->mutex[index]);
-    if (table->entries[index].k != NULL)
+    if (table->entries[index].k != 0)
     {
 
-        if (*table->entries[index].k != k)
+        if (table->entries[index].k != k)
         {
             do
             {
                 pthread_mutex_unlock(&table->mutex[index]);
                 index = (index + 1) % initial_table_size;
                 pthread_mutex_lock(&table->mutex[index]);
-            } while (table->entries[index].k != NULL && *table->entries[index].k != k);
+            } while (table->entries[index].k != 0 && table->entries[index].k != k);
         }
     }
 
-    if (table->entries[index].k != NULL && *table->entries[index].k == k)
+    if (table->entries[index].k != 0 && table->entries[index].k == k)
     {
         *v = table->entries[index].v;
     }
@@ -162,19 +167,12 @@ void get(key_type k, value_type *v)
  */
 void *thread_function(void *arg)
 {
-    while (!atomic_load(&shutdown_flag))
+    while (1)
     {
         struct buffer_descriptor *bd = malloc(sizeof(struct buffer_descriptor));
         struct buffer_descriptor *result;
-        do
-        {
             ring_get(ring, bd);
-            if (atomic_load(&shutdown_flag))
-            { // Check flag again after blocking call
-                free(bd);
-                return NULL;
-            }
-        } while (bd->k == 0);
+
         result = (struct buffer_descriptor *)(shmem_area + bd->res_off);
         memcpy(result, bd, sizeof(struct buffer_descriptor));
         if (result->req_type == PUT)

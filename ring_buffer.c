@@ -12,7 +12,8 @@
 #define SNAME_SUBMIT "/mysem_submit"
 #define SNAME_GET "/mysem_get"
 
-sem_t *empty, *full, *mutex_submit, *mutex_get;
+
+pthread_mutex_t mutex[RING_SIZE];  //attempted to lock individual cell in the ring - in attempt (unsuccesful) to prevent from simutaneous reader and writing of same value
 void sem_reset(sem_t *sem, int INITIAL_VAL)
 {
     int value;
@@ -41,109 +42,48 @@ int init_ring(struct ring *r)
         r->buffer[i].k = 0;
         r->buffer[i].v = 0;
     }
-
-    empty = sem_open(SNAME_EMPTY, O_CREAT, 0644, RING_SIZE); //sem innit
-    sem_reset(empty, RING_SIZE);
-    if (empty == SEM_FAILED)
-    {
-        perror("Failed to open semphore for empty");
-        exit(-1);
-    }
-    full = sem_open(SNAME_FULL, O_CREAT, 0644, 0);
-    sem_reset(full, 0);
-    if (full == SEM_FAILED)
-    {
-        perror("Failed to open semphore for full");
-        exit(-1);
-    }
-    mutex_submit = sem_open(SNAME_SUBMIT, O_CREAT, 0644, 1);
-    sem_reset(mutex_submit, 1);
-    if (mutex_submit == SEM_FAILED)
-    {
-        perror("Failed to open semphore for mutex_submit");
-        exit(-1);
-    }
-    mutex_get = sem_open(SNAME_GET, O_CREAT, 0644, 1);
-    sem_reset(mutex_get, 1);
-    if (mutex_get == SEM_FAILED)
-    {
-        perror("Failed to open semphore for mutex_get");
-        exit(-1);
-    }
+    sem_init(&r->empty, 1, RING_SIZE); // Initialize semaphore with initial value 1
+    sem_init(&r->full, 1, 0);
+    sem_init(&r->mutex_submit, 1, 1);
+    sem_init(&r->mutex_get, 1, 1);
     return 0;
-}
-
-int re_init()
-{
-    empty = sem_open(SNAME_EMPTY, RING_SIZE);
-    if (empty == SEM_FAILED)
-    {
-        perror("Failed to open semphore for empty");
-        exit(-1);
-    }
-    full = sem_open(SNAME_FULL, 0);
-    if (full == SEM_FAILED)
-    {
-        perror("Failed to open semphore for full");
-        exit(-1);
-    }
-    mutex_submit = sem_open(SNAME_SUBMIT, 1); // get in server only cares about its mutex lock
-    if (mutex_submit == SEM_FAILED)
-    {
-        perror("Failed to open semphore for mutex_submit");
-        exit(-1);
-    }
-    mutex_get = sem_open(SNAME_GET, 1);
-    if (mutex_get == SEM_FAILED)
-    {
-        perror("Failed to open semphore for mutex_get");
-        exit(-1);
-        return 0;
-    }
 }
 
 void ring_submit(struct ring *r, struct buffer_descriptor *bd)
 {
-     re_init();
+
     //printf("submit___________sem_wait(&empty);\n");
-    sem_wait(empty);
+    sem_wait(&r->empty);
     //printf("submit___________sem_wait(&mutex_submit);\n");
-    sem_wait(mutex_submit);
-    int next_tail = (r->c_tail + 1) % RING_SIZE;
-    // if (next_tail == r->c_head)
-    // {
-    //     printf("RING is full, cannot submit. - head:%u == tail:%u\n", r->c_head, r->c_tail);
-    //     printf("submit___________sem_post(&full);\n");
-    //     sem_post(mutex_submit);
-    //     sem_post(full);
-    // }
+    sem_wait(&r->mutex_submit);
+     
+    int next_tail = (atomic_load(&r->c_tail) + 1) % RING_SIZE;
+
+    //pthread_mutex_lock(&mutex[next_tail]);
     r->c_tail = next_tail;
     r->buffer[r->c_tail] = *bd;
-   // printf("submit___________sem_post(&mutex_submit);\n");
-    sem_post(mutex_submit);
-    //printf("submit___________sem_post(&full);\n");
-    sem_post(full);
-}
 
+    //pthread_mutex_unlock(&mutex[next_tail]);
+   // printf("submit___________sem_post(&mutex_submit);\n");
+    sem_post(&r->mutex_submit);
+    //printf("submit___________sem_post(&full);\n");
+    sem_post(&r->full);
+}
+int reloaded = 0;
 void ring_get(struct ring *r, struct buffer_descriptor *bd)
 {
-    re_init();
-
     //printf("get___________sem_wait(&full); - head:%u <= tail:%u\n", r->c_head, r->c_tail);
-    sem_wait(full);
+    sem_wait(&r->full);
     //printf("get__________sem_wait(&mutex_get);\n");
-    sem_wait(mutex_get);
-    // if (r->c_head == r->c_tail)
-    // {
-    //     printf("RING is empty, cannot get. (when tail==head==%u)\n", r->c_tail);
-    //     printf("get__________sem_post(&empty);\n");
-    //     sem_post(mutex_get);
-    //     sem_post(empty);
-    // }
-    r->c_head = (r->c_head + 1) % RING_SIZE;
+    sem_wait(&r->mutex_get);
+ 
+     int next_head =(atomic_load(&r->c_head) + 1) % RING_SIZE;
+    //pthread_mutex_lock(&mutex[next_head]);
+    r->c_head = next_head;
     *bd = r->buffer[r->c_head];
+    //pthread_mutex_unlock(&mutex[next_head]);
     //printf("get__________sem_post(&mutex_get);;\n");
-    sem_post(mutex_get);
+    sem_post(&r->mutex_get);
     //printf("get__________sem_post(&empty);;\n");
-    sem_post(empty);
+    sem_post(&r->empty);
 }
