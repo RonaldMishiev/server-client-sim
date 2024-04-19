@@ -3,7 +3,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include "common.h"
-
+#include <semaphore.h>
 #define RING_SIZE 1024
 
 enum REQUEST_TYPE {
@@ -52,7 +52,7 @@ struct __attribute__((packed, aligned(64))) ring {
 	uint32_t c_head;
 	char pad4[60];
 	/* An array of structs - This is the actual ring */
-	sem_t empty, full, mutex_submit, mutex_get;
+sem_t empty, full, mutex_submit, mutex_get;
 	struct buffer_descriptor buffer[RING_SIZE];
 };
 

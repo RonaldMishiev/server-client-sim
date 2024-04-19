@@ -87,3 +87,4 @@ void ring_get(struct ring *r, struct buffer_descriptor *bd)
     //printf("get__________sem_post(&empty);;\n");
     sem_post(&r->empty);
 }
+
