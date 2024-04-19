@@ -42,7 +42,7 @@ int init_ring(struct ring *r)
         r->buffer[i].v = 0;
     }
 
-    empty = sem_open(SNAME_EMPTY, O_CREAT, 0644, RING_SIZE);
+    empty = sem_open(SNAME_EMPTY, O_CREAT, 0644, RING_SIZE); //sem innit
     sem_reset(empty, RING_SIZE);
     if (empty == SEM_FAILED)
     {
@@ -104,20 +104,24 @@ int re_init()
 
 void ring_submit(struct ring *r, struct buffer_descriptor *bd)
 {
+     re_init();
+    //printf("submit___________sem_wait(&empty);\n");
     sem_wait(empty);
-    // printf("submit___________sem_wait(&mutex_submit);\n");
+    //printf("submit___________sem_wait(&mutex_submit);\n");
     sem_wait(mutex_submit);
     int next_tail = (r->c_tail + 1) % RING_SIZE;
-    if (next_tail == r->c_head)
-    {
-        // printf("RING is full, cannot submit. - head:%u == tail:%u\n", r->c_head, r->c_tail);
-        // printf("submit___________sem_post(&full);\n");
-        sem_post(full);
-    }
+    // if (next_tail == r->c_head)
+    // {
+    //     printf("RING is full, cannot submit. - head:%u == tail:%u\n", r->c_head, r->c_tail);
+    //     printf("submit___________sem_post(&full);\n");
+    //     sem_post(mutex_submit);
+    //     sem_post(full);
+    // }
     r->c_tail = next_tail;
     r->buffer[r->c_tail] = *bd;
+   // printf("submit___________sem_post(&mutex_submit);\n");
     sem_post(mutex_submit);
-    // printf("submit___________sem_post(&full);\n");
+    //printf("submit___________sem_post(&full);\n");
     sem_post(full);
 }
 
@@ -125,20 +129,21 @@ void ring_get(struct ring *r, struct buffer_descriptor *bd)
 {
     re_init();
 
-    // printf("get___________sem_wait(&full); - head:%u <= tail:%u\n", r->c_head, r->c_tail);
+    //printf("get___________sem_wait(&full); - head:%u <= tail:%u\n", r->c_head, r->c_tail);
     sem_wait(full);
-    // printf("get__________sem_wait(&mutex_get);\n");
+    //printf("get__________sem_wait(&mutex_get);\n");
     sem_wait(mutex_get);
-    if (r->c_head == r->c_tail)
-    {
-        // printf("RING is empty, cannot get. (when tail==head==%u)\n", r->c_tail);
-        // printf("get__________sem_post(&empty);\n");
-        sem_post(empty);
-    }
+    // if (r->c_head == r->c_tail)
+    // {
+    //     printf("RING is empty, cannot get. (when tail==head==%u)\n", r->c_tail);
+    //     printf("get__________sem_post(&empty);\n");
+    //     sem_post(mutex_get);
+    //     sem_post(empty);
+    // }
     r->c_head = (r->c_head + 1) % RING_SIZE;
     *bd = r->buffer[r->c_head];
-    // printf("get__________sem_post(&mutex_get);;\n");
+    //printf("get__________sem_post(&mutex_get);;\n");
     sem_post(mutex_get);
-    // printf("get__________sem_post(&empty);;\n");
+    //printf("get__________sem_post(&empty);;\n");
     sem_post(empty);
 }
